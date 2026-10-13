@@ -9,7 +9,10 @@
 # ================================================================
 
 # ============ 阶段 1: 基础镜像 (Ubuntu 26.04, amd64, GLIBC>=2.28) ============
-FROM --platform=linux/amd64 ubuntu:26.04
+# 说明: 本镜像仅支持 amd64，用 ARG 而非常量写 --platform, 以消除 BuildKit FromPlatformFlagConstDisallowed warning。
+# 注意不用预定义的 $TARGETPLATFORM (会报 RedundantTargetPlatform)，故用自定义变量名。
+ARG IMAGE_PLATFORM=linux/amd64
+FROM --platform=$IMAGE_PLATFORM ubuntu:26.04
 
 # ============ 阶段 2: 时区 / 语言 / 字符集 ============
 # 时区 Asia/Shanghai, 语言 en_US.UTF-8

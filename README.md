@@ -121,6 +121,10 @@ docker run --rm -it --user harmony harmonyos-clt:latest bash
 
 注意：挂载目录的读写权限需自行控制（`/workspace` 已授权给 `harmony` 用户）。
 
+### Q6: 带 C++（BiSheng）原生代码的工程构建失败，提示缺 `libxml2.so.2`？
+
+Ubuntu 26.04 仅提供 `libxml2.so.16`，而 BiSheng 的 `lld` 需要 `libxml2.so.2`（见 [#1](https://github.com/springtwr/harmonyos-clt/issues/1)）。镜像已在 `/opt/compat-lib` 内置兼容库（取自 Ubuntu 24.04 的 `libxml2` + `libicu74`，约 34MB），经 `ldconfig` 注册，开箱即用，无需设置 `LD_LIBRARY_PATH`。构建时另有 `ldd` 门禁逐个检查 BiSheng 工具链，防止此类缺库问题回归。
+
 ## 许可与免责
 
 本镜像仅用于 HarmonyOS 应用构建场景，Command Line Tools 及相关组件的版权归其权利人所有。请遵循华为开发者平台的许可协议。

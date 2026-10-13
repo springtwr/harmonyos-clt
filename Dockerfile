@@ -52,6 +52,40 @@ ARG CLT_ZIP_FILENAME=commandline-tools-linux-x64.zip
 RUN --mount=type=bind,source=${CLT_ZIP_FILENAME},target=/tmp/clt-build.zip \
     unzip -q /tmp/clt-build.zip -d /opt
 
+# ============ 阶段 4b: BiSheng 原生工具链兼容库 (Issue #1) ============
+# 背景: BiSheng 的 lld (即 ld.lld) 依赖 libxml2.so.2, 而 Ubuntu 26.04 仅提供
+#       libxml2.so.16, 且默认不再安装任何 libxml2, 导致 C++ 原生工程 CMake 检测失败。
+#       详见 https://github.com/springtwr/harmonyos-clt/issues/1
+# 做法: 临时借用 Ubuntu 24.04 (noble) 源, 仅下载 (不安装) libxml2 与 libicu74,
+#       解开后只取 3 个库文件放入 /opt/compat-lib, 经 ldconfig 注册,
+#       运行时无需 LD_LIBRARY_PATH, 也不影响系统自带的 libxml2.so.16。
+# 说明: 仅 download 不 install, 不会污染 26.04 系统包; 不写死版本号, 每次构建自动
+#       跟进 noble-security 最新 (LTS 内 soname 冻结, 构建日志打印实际版本以备追溯)。
+# 维护: 若新版 BiSheng 新增系统依赖, 阶段 8 的 ldd 门禁会在构建时报错,
+#       按此配方把包名加入 download 列表并补充 cp 即可。
+RUN echo 'deb https://mirrors.ustc.edu.cn/ubuntu noble main universe' > /etc/apt/sources.list.d/noble-compat.list \
+    && echo 'deb https://mirrors.ustc.edu.cn/ubuntu noble-updates main universe' >> /etc/apt/sources.list.d/noble-compat.list \
+    && echo 'deb https://mirrors.ustc.edu.cn/ubuntu noble-security main universe' >> /etc/apt/sources.list.d/noble-compat.list \
+    && apt-get update -y \
+    && mkdir -p /tmp/compat-dl \
+    && ( cd /tmp/compat-dl && apt-get download libxml2 libicu74 ) \
+    && echo "--- 兼容库 .deb 版本 ---" \
+    && dpkg-deb -f /tmp/compat-dl/libxml2_*.deb Package Version \
+    && dpkg-deb -f /tmp/compat-dl/libicu74_*.deb Package Version \
+    && mkdir -p /tmp/compat-x1 /tmp/compat-x2 /opt/compat-lib \
+    && dpkg-deb -x /tmp/compat-dl/libxml2_*.deb /tmp/compat-x1 \
+    && dpkg-deb -x /tmp/compat-dl/libicu74_*.deb /tmp/compat-x2 \
+    && cp -L /tmp/compat-x1/usr/lib/x86_64-linux-gnu/libxml2.so.2 \
+             /tmp/compat-x2/usr/lib/x86_64-linux-gnu/libicuuc.so.74 \
+             /tmp/compat-x2/usr/lib/x86_64-linux-gnu/libicudata.so.74 \
+             /opt/compat-lib/ \
+    && echo '/opt/compat-lib' > /etc/ld.so.conf.d/bisheng-compat.conf \
+    && ldconfig \
+    && rm -f /etc/apt/sources.list.d/noble-compat.list \
+    && rm -rf /tmp/compat-dl /tmp/compat-x1 /tmp/compat-x2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && echo "--- 兼容库内容 ---" && ls -lh /opt/compat-lib/
+
 # ============ 阶段 5: 配置环境变量 (依据鸿蒙官方文档 Linux 路径) ============
 # JAVA_HOME / NODE_HOME / HDC_HOME / HAP_SIGN_TOOL_PATH / PATH
 ENV COMMANDLINE_TOOL_DIR=/opt/command-line-tools \
@@ -94,9 +128,20 @@ RUN useradd -m -s /bin/bash harmony \
 
 # ============ 阶段 8: 构建验证 ============
 # 确认 java / node / ohpm / hvigorw / hdc 均可用且版本信息正确输出。
+# 另含 BiSheng 原生工具链 ldd 回归门禁 (Issue #1): 逐个检查 BiSheng/bin 下所有文件,
+# 若有缺失的系统依赖则构建失败, 防止基础镜像升级或 BiSheng 更新引入新的缺库问题。
 RUN echo "===== Java =====" && java -version \
     && echo "===== Node =====" && node -v \
     && echo "===== ohpm =====" && ohpm -v \
     && echo "===== hvigorw =====" && hvigorw -v \
     && echo "===== hdc =====" && hdc -v \
-    && echo "===== CLT 目录内容 =====" && ls ${COMMANDLINE_TOOL_DIR}
+    && echo "===== CLT 目录内容 =====" && ls ${COMMANDLINE_TOOL_DIR} \
+    && echo "===== BiSheng 原生工具链依赖门禁 =====" \
+    && for bin in ${COMMANDLINE_TOOL_DIR}/sdk/default/hms/native/BiSheng/bin/*; do \
+         if [ -f "${bin}" ]; then \
+           absent=$(ldd "${bin}" 2>/dev/null | grep "not found" || true); \
+           if [ -n "${absent}" ]; then echo "缺失依赖: ${bin}: ${absent}"; fail=1; fi; \
+         fi; \
+       done; \
+       if [ "${fail:-0}" = "1" ]; then echo "ERROR: BiSheng 存在缺失的系统依赖"; exit 1; fi \
+    && echo "BiSheng 依赖检查通过"
